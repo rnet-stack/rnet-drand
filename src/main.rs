@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
@@ -20,7 +20,9 @@ async fn main() -> Result<()> {
 
     dotenvy::dotenv().ok();
 
-    println!("Start as bootstrap node (y/n)");
+    print!("Start as bootstrap node (y/n): ");
+    io::stdout().flush().unwrap();
+
     let mut mode = String::new();
     io::stdin().read_line(&mut mode).unwrap();
 

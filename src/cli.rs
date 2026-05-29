@@ -1,4 +1,6 @@
 use anyhow::Result;
+use rand::rng;
+use rand::seq::IndexedRandom;
 use rnet_p2p::identity::multiaddr::Multiaddr;
 use rnet_p2p::identity::traits::{
     core::INode,
@@ -7,6 +9,7 @@ use rnet_p2p::identity::traits::{
 use std::collections::HashMap;
 use std::{io::Write, sync::Arc, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
+use tracing::debug;
 
 use crate::common::MpcMsgType;
 use crate::node::MPCNode;
@@ -18,14 +21,19 @@ const COMMANDS: &[&str] = &[
     "local                      => get local peer-info",
     "connect <maddr>            => connect with a new peer",
     "ping <maddr> <count>       => exchange ping with a peer",
+    "peers                      => list the connected peers",
+    "\n",
     "fsub <maddr>               => open a new floodsub stream with the peer",
     "join <topic>               => subscribe to a new-topic",
     "leave <topic>              => unsubscribe to a new-topic",
     "publish <topic> <msg>      => publish a msg to a topic",
     "topics                     => list the subscribed topics",
-    "fpeers                      => list the connected Floodsub peers",
-    "peers                      => list the connected peers",
+    "fpeers                     => list the connected Floodsub peers",
+    "bootmesh                   => map of topics -> peer (BOOTSTRAP)",
     "mesh                       => map of topics -> peer",
+    "\n",
+    "start <topic>              => start a drand session",
+    "enter <topic>              => participate in a drand session",
 ];
 
 fn print_commands() {
@@ -154,6 +162,51 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
                 println!("- {}", topic);
                 peers.iter().for_each(|peer| println!("  - {}", peer));
             });
+        }
+
+        "start" => {
+            let topic = parts.next().unwrap().to_string();
+            let fsub_msg = bincode::serialize(&MpcMsgType::Advertize(topic.clone())).unwrap();
+
+            mpc_node
+                .host_mpsc_tx
+                .floodsub_publish("mpc-common".to_string(), fsub_msg)
+                .await
+                .unwrap();
+
+            mpc_node
+                .host_mpsc_tx
+                .floodsub_subscribe(topic)
+                .await
+                .unwrap();
+        }
+
+        "enter" => {
+            let topic = parts.next().unwrap().to_string();
+            debug!("Participating in drand session: {}", topic);
+            mpc_node
+                .host_mpsc_tx
+                .floodsub_subscribe(topic.clone())
+                .await
+                .unwrap();
+
+            let peers = {
+                let bootmesh = mpc_node.bootmesh.lock().await;
+                bootmesh.get(&topic).unwrap_or(&vec![]).clone()
+            };
+            debug!("Peers to connected to:");
+            peers.iter().for_each(|peer| {
+                println!("{}", peer);
+            });
+
+            let random_peer = peers.choose(&mut rng()).expect("No peer to connect to");
+            debug!("Connecting to: {}", random_peer);
+
+            mpc_node
+                .host_mpsc_tx
+                .new_stream(random_peer, vec![FLOODSUB.to_string()])
+                .await
+                .unwrap();
         }
 
         _ => println!("Unknown command"),

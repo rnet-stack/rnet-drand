@@ -124,7 +124,11 @@ impl MPCNode {
                             }
 
                             MpcMsgType::Advertize(adv) => {
-                                info!("Session starting at topic: {}", adv);
+                                if self.mode == "bootstrap" {
+                                    continue;
+                                }
+
+                                info!("Drand session starting in topic: {}", adv);
                             }
 
                             MpcMsgType::Session(_payload) => {}
@@ -162,10 +166,7 @@ impl MPCNode {
                 .await
                 .unwrap_or(HashMap::new());
 
-            let bootmesh_bytes = bincode::serialize(&bootmesh).unwrap();
-            let latest_mesh_bytes = bincode::serialize(&latest_mesh).unwrap();
-
-            if bootmesh_bytes == latest_mesh_bytes {
+            if bootmesh == latest_mesh {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             }
