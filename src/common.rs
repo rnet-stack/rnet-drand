@@ -1,6 +1,18 @@
 use anyhow::Result;
+use rand::{RngExt, distr::Alphanumeric, rng};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use crate::drand::SessionPayload;
+
+pub type SessionId = String;
+pub type CommitDeadline = u64;
+pub type AckDeadline = u64;
 
 pub fn set_bootstrap_node(addr: &str) -> Result<()> {
     let env_path = ".env";
@@ -27,10 +39,31 @@ pub fn set_bootstrap_node(addr: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn unix_epoch() -> u64 {
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH).unwrap();
+
+    duration.as_secs()
+}
+
+pub fn generate_entropy() -> (String, String) {
+    let secret: String = rng()
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect();
+
+    let mut hasher = Sha256::new();
+    hasher.update(secret.as_bytes());
+    let hash = hex::encode(hasher.finalize());
+
+    (secret, hash)
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum MpcMsgType {
     General(String),
-    Session(Vec<u8>),
-    Advertize(String),
+    Session(SessionPayload),
+    Advertize((SessionId, CommitDeadline, AckDeadline)),
     Bootmesh(HashMap<String, Vec<String>>),
 }

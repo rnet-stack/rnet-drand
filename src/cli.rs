@@ -166,7 +166,8 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
 
         "start" => {
             let topic = parts.next().unwrap().to_string();
-            let fsub_msg = bincode::serialize(&MpcMsgType::Advertize(topic.clone())).unwrap();
+            let fsub_msg =
+                bincode::serialize(&MpcMsgType::Advertize((topic.clone(), 15, 15))).unwrap();
 
             mpc_node
                 .host_mpsc_tx
@@ -176,9 +177,18 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
 
             mpc_node
                 .host_mpsc_tx
-                .floodsub_subscribe(topic)
+                .floodsub_subscribe(topic.clone())
                 .await
                 .unwrap();
+
+            let session_node = mpc_node.clone();
+            tokio::spawn(async move {
+                session_node
+                    .drand_service
+                    .spawn_session(topic.clone(), 15, 15, true)
+                    .await
+                    .unwrap();
+            });
         }
 
         "enter" => {
@@ -194,19 +204,36 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
                 let bootmesh = mpc_node.bootmesh.lock().await;
                 bootmesh.get(&topic).unwrap_or(&vec![]).clone()
             };
-            debug!("Peers to connected to:");
-            peers.iter().for_each(|peer| {
-                println!("{}", peer);
-            });
+
+            let leader = peers[0].clone();
+            debug!("Connecting to leader: {}", leader);
+            mpc_node
+                .host_mpsc_tx
+                .new_stream(leader.as_ref(), vec![FLOODSUB.to_string()])
+                .await
+                .unwrap();
 
             let random_peer = peers.choose(&mut rng()).expect("No peer to connect to");
-            debug!("Connecting to: {}", random_peer);
+            debug!(
+                "Connecting to a random peer, to prevent Eclipse Attack: {}",
+                random_peer
+            );
 
             mpc_node
                 .host_mpsc_tx
                 .new_stream(random_peer, vec![FLOODSUB.to_string()])
                 .await
                 .unwrap();
+
+            let session_node = mpc_node.clone();
+
+            tokio::spawn(async move {
+                session_node
+                    .drand_service
+                    .spawn_session(topic.clone(), 10, 10, false)
+                    .await
+                    .unwrap();
+            });
         }
 
         _ => println!("Unknown command"),

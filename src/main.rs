@@ -8,6 +8,7 @@ use crate::{cli::cli_loop, node::MPCNode};
 pub mod cli;
 pub mod common;
 pub mod node;
+pub mod drand;
 
 #[tokio::main]
 async fn main() -> Result<()> {

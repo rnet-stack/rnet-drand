@@ -13,12 +13,13 @@ use rnet_p2p::{
 use tokio::sync::{Mutex, mpsc::Receiver};
 use tracing::{debug, info};
 
-use crate::common::MpcMsgType;
+use crate::{common::MpcMsgType, drand::DrandService};
 
 pub struct MPCNode {
     pub host_mpsc_tx: Arc<Node>,
     pub mode: String,
     pub listen_addr: Multiaddr,
+    pub drand_service: Arc<DrandService>,
 
     pub bootmesh: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
@@ -57,9 +58,13 @@ impl MPCNode {
         };
 
         let mpc_node = Arc::new(MPCNode {
-            host_mpsc_tx,
+            host_mpsc_tx: host_mpsc_tx.clone(),
             mode: mode.to_string(),
             listen_addr,
+            drand_service: Arc::new(DrandService {
+                sessions: Arc::new(Mutex::new(HashMap::new())),
+                host_mpsc_tx: host_mpsc_tx.clone(),
+            }),
 
             bootmesh: Arc::new(Mutex::new(HashMap::new())),
         });
@@ -113,7 +118,7 @@ impl MPCNode {
             match decoded {
                 GlobalEvent::Floodsub(event) => match event.msg_type {
                     FloodsubMsgType::Publish => {
-                        let topic = event.topic;
+                        let topic = event.topic.clone();
                         let source = event.source.unwrap();
                         let decoded_msg =
                             bincode::deserialize::<MpcMsgType>(&event.msg.unwrap()).unwrap();
@@ -123,15 +128,22 @@ impl MPCNode {
                                 debug!("FloodsubEvent: {topic} - {source}: {msg}")
                             }
 
-                            MpcMsgType::Advertize(adv) => {
+                            MpcMsgType::Advertize((id, commit, ack)) => {
                                 if self.mode == "bootstrap" {
                                     continue;
                                 }
 
-                                info!("Drand session starting in topic: {}", adv);
+                                info!(
+                                    "New Drand session - session_id: {id}; ack_deadline: {ack}; commit_deadline: {commit}"
+                                );
                             }
 
-                            MpcMsgType::Session(_payload) => {}
+                            MpcMsgType::Session(payload) => {
+                                self.drand_service
+                                    .handle_incoming(payload, event.topic)
+                                    .await
+                                    .unwrap();
+                            }
                             MpcMsgType::Bootmesh(mesh) => {
                                 let mut bootmesh = self.bootmesh.lock().await;
                                 *bootmesh = mesh;
