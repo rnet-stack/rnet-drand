@@ -11,7 +11,8 @@ use std::{io::Write, sync::Arc, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
 use tracing::debug;
 
-use crate::common::MpcMsgType;
+use crate::common::{MpcMsgType, unix_epoch};
+use crate::drand::{SessionPayload, SessionStage, SessionState};
 use crate::node::MPCNode;
 
 const CLI_DELAY: Duration = Duration::from_nanos(1000);
@@ -32,8 +33,11 @@ const COMMANDS: &[&str] = &[
     "bootmesh                   => map of topics -> peer (BOOTSTRAP)",
     "mesh                       => map of topics -> peer",
     "\n",
-    "start <topic>              => start a drand session",
-    "enter <topic>              => participate in a drand session",
+    "adv <topic>                => advertize a drand session",
+    "con <topic>                => participate in a drand session",
+    "commit <topic>             => commit the random hash",
+    "reveal <topic>             => reveal the secrets",
+    "reduce <topic>             => reduce the hashes, and general the mpc drand",
 ];
 
 fn print_commands() {
@@ -164,7 +168,7 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
             });
         }
 
-        "start" => {
+        "adv" => {
             let topic = parts.next().unwrap().to_string();
             let fsub_msg =
                 bincode::serialize(&MpcMsgType::Advertize((topic.clone(), 15, 15))).unwrap();
@@ -181,17 +185,28 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
                 .await
                 .unwrap();
 
-            let session_node = mpc_node.clone();
-            tokio::spawn(async move {
-                session_node
-                    .drand_service
-                    .spawn_session(topic.clone(), 15, 15, true)
-                    .await
-                    .unwrap();
-            });
+            let drand_session = SessionState {
+                stage: SessionStage::Ack,
+                session_id: topic.clone(),
+                participants: Vec::new(),
+                blacklist: Vec::new(),
+                commit_hashes: HashMap::new(),
+                drand: None,
+
+                local_rand: None,
+                leader: mpc_node.host_mpsc_tx.local_peer_info.listen_addr.clone(),
+                is_leader: true,
+            };
+
+            {
+                let mut sessions = mpc_node.drand_service.sessions.lock().await;
+                sessions.insert(topic.clone(), drand_session);
+            }
+
+            debug!("ADVERTIZE done, waiting on the partipants...");
         }
 
-        "enter" => {
+        "con" => {
             let topic = parts.next().unwrap().to_string();
             debug!("Participating in drand session: {}", topic);
             mpc_node
@@ -225,15 +240,85 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
                 .await
                 .unwrap();
 
-            let session_node = mpc_node.clone();
+            let drand_session = SessionState {
+                stage: SessionStage::Ack,
+                session_id: topic.clone(),
+                participants: Vec::new(),
+                blacklist: Vec::new(),
+                commit_hashes: HashMap::new(),
+                drand: None,
 
-            tokio::spawn(async move {
-                session_node
-                    .drand_service
-                    .spawn_session(topic.clone(), 10, 10, false)
-                    .await
-                    .unwrap();
-            });
+                local_rand: None,
+                leader,
+                is_leader: false,
+            };
+
+            {
+                let mut sessions = mpc_node.drand_service.sessions.lock().await;
+                sessions.insert(topic.clone(), drand_session);
+            }
+
+            debug!("ACK completed, waiting for leader to start COMMIT...");
+        }
+
+        "commit" => {
+            let topic = parts.next().unwrap().to_string();
+
+            mpc_node
+                .drand_service
+                .ack_participants(&topic)
+                .await
+                .unwrap();
+
+            debug!("Initiating the commit phase: {topic}");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            mpc_node
+                .drand_service
+                .handle_commit(None, &topic)
+                .await
+                .unwrap();
+        }
+
+        "reveal" => {
+            let topic = parts.next().unwrap().to_string();
+
+            let (secret, _) = {
+                let mut sessions = mpc_node.drand_service.sessions.lock().await;
+                let session = sessions.get_mut(&topic).unwrap();
+                session.stage = SessionStage::Reduction;
+
+                session.local_rand.clone().unwrap()
+            };
+
+            let reveal_payload = SessionPayload {
+                source: mpc_node.host_mpsc_tx.local_peer_info.listen_addr.clone(),
+                stage: SessionStage::Reveal,
+                participants: None,
+                commit_hash: None,
+                secret: Some(secret),
+                drand: None,
+                timestamp: unix_epoch(),
+            };
+
+            let fsub_payload = MpcMsgType::Session(reveal_payload);
+            let payload_bytes = bincode::serialize(&fsub_payload).unwrap();
+
+            mpc_node
+                .host_mpsc_tx
+                .floodsub_publish(topic, payload_bytes)
+                .await
+                .unwrap();
+        }
+
+        "reduce" => {
+            let topic = parts.next().unwrap().to_string();
+
+            mpc_node
+                .drand_service
+                .handle_reduction(&topic, None)
+                .await
+                .unwrap();
         }
 
         _ => println!("Unknown command"),

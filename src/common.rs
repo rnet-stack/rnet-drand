@@ -60,6 +60,23 @@ pub fn generate_entropy() -> (String, String) {
     (secret, hash)
 }
 
+pub fn xor_sha_commits(hashes: Vec<String>) -> String {
+    let max_len = hashes.iter().map(|s| s.len()).max().unwrap();
+
+    let mut result = vec![0u8; max_len];
+
+    for s in hashes {
+        for (i, byte) in s.as_bytes().iter().enumerate() {
+            result[i] ^= byte;
+        }
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(result);
+
+    hex::encode(hasher.finalize())
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum MpcMsgType {
     General(String),

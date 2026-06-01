@@ -115,6 +115,7 @@ impl MPCNode {
         loop {
             let notification = global_event_rx.recv().await.unwrap();
             let decoded = bincode::deserialize::<GlobalEvent>(&notification).unwrap();
+
             match decoded {
                 GlobalEvent::Floodsub(event) => match event.msg_type {
                     FloodsubMsgType::Publish => {
