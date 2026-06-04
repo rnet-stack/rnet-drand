@@ -271,7 +271,6 @@ async fn handle_cmd(line: &str, mpc_node: &Arc<MPCNode>) -> Result<()> {
                 .unwrap();
 
             debug!("Initiating the commit phase: {topic}");
-            tokio::time::sleep(Duration::from_secs(2)).await;
 
             mpc_node
                 .drand_service
